@@ -36,7 +36,7 @@ By default the script writes `reports/bart_kalshi_<date>_summary.md` containing 
 - TTQ > 50
 - and abs(Bart spread - Kalshi spread) >= 2 OR abs(Bart total - Kalshi total) >= 2
 
-The summary table and picks are ordered by game time, exclude games that have already started (assuming the listed times are Eastern; local Pacific time is converted to Eastern), and mark TTQ >= 70 with a star. You can override the path with `--md`.
+The summary table and picks are ordered by game time, exclude games that have already started, and mark TTQ >= 70 with a star. Times shown in output are converted from Eastern to your local time zone. You can override the path with `--md`.
 
 ## Notes / assumptions
 

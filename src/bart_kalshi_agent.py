@@ -7,10 +7,11 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,6 +19,7 @@ from bs4 import BeautifulSoup
 
 BART_SCHEDULE_URL = "https://barttorvik.com/schedule.php"
 KALSHI_API_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+_ET_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -657,6 +659,18 @@ def _fmt_ml(value: Optional[int]) -> str:
     return f"{value:+d}"
 
 
+def _local_time_from_et(game_date: str, game_time: str) -> tuple[Optional[str], Optional[datetime]]:
+    try:
+        dt_et = datetime.strptime(f"{game_date} {game_time}", "%Y%m%d %I:%M %p").replace(tzinfo=_ET_TZ)
+    except ValueError:
+        return None, None
+    local_tz = datetime.now().astimezone().tzinfo
+    if local_tz is None:
+        return dt_et.strftime("%I:%M %p"), dt_et
+    dt_local = dt_et.astimezone(local_tz)
+    return dt_local.strftime("%I:%M %p"), dt_local
+
+
 def _kalshi_spread_home_value(line: KalshiDerivedLine) -> Optional[float]:
     if line.median_home_margin is None:
         return None
@@ -677,7 +691,7 @@ def _diffs_for_game(row: GameComparison) -> tuple[Optional[float], Optional[floa
 
 def _print_table(date: str, rows: list[GameComparison]) -> None:
     header = [
-        "Time",
+        "Time (Local)",
         "Away",
         "Home",
         "Bart P(Home)",
@@ -696,6 +710,8 @@ def _print_table(date: str, rows: list[GameComparison]) -> None:
     print("\t".join(header))
     for r in rows:
         g = r.game
+        local_time, _ = _local_time_from_et(g.date, g.time)
+        time_value = local_time or g.time
         bart_score = ""
         if g.bart_predicted_score_away is not None and g.bart_predicted_score_home is not None:
             bart_score = f"{g.bart_predicted_score_away}-{g.bart_predicted_score_home}"
@@ -709,7 +725,7 @@ def _print_table(date: str, rows: list[GameComparison]) -> None:
         print(
             "\t".join(
                 [
-                    g.time,
+                    time_value,
                     g.away_team,
                     g.home_team,
                     _fmt_pct(g.bart_win_prob_home),
@@ -764,12 +780,13 @@ def _write_csv(path: str, date: str, rows: list[GameComparison]) -> None:
         writer.writeheader()
         for r in rows:
             g = r.game
+            local_time, _ = _local_time_from_et(g.date, g.time)
             implied_spread_home = _kalshi_spread_home_value(r.kalshi_line)
             spread_diff, total_diff = _diffs_for_game(r)
             writer.writerow(
                 {
                     "date": date,
-                    "time": g.time,
+                    "time": local_time or g.time,
                     "away_team": g.away_team,
                     "home_team": g.home_team,
                     "bart_predicted_winner": g.bart_predicted_winner,
@@ -809,7 +826,7 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
     lines.append("")
 
     header = [
-        "Time",
+        "Time (Local)",
         "Away",
         "Home",
         "TTQ",
@@ -822,30 +839,11 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
         "Bart Score",
         "Kalshi Implied Score",
     ]
-    def time_key(value: str) -> tuple[int, str]:
-        try:
-            parsed = datetime.strptime(value.strip(), "%I:%M %p")
-            return (parsed.hour * 60 + parsed.minute, value)
-        except ValueError:
-            return (10**9, value)
-
     def is_started(game_date: str, game_time: str) -> bool:
-        # Bart times are typically Eastern; convert local Pacific -> Eastern by adding 3 hours.
-        now_local = datetime.now()
-        now_et = now_local + timedelta(hours=3)
-        try:
-            game_day = datetime.strptime(game_date, "%Y%m%d").date()
-        except ValueError:
+        _, dt_local = _local_time_from_et(game_date, game_time)
+        if dt_local is None:
             return False
-        if game_day < now_et.date():
-            return True
-        if game_day > now_et.date():
-            return False
-        try:
-            game_dt = datetime.strptime(f"{game_date} {game_time}", "%Y%m%d %I:%M %p")
-        except ValueError:
-            return False
-        return game_dt <= now_et
+        return dt_local <= datetime.now().astimezone()
 
     filtered_rows: list[GameComparison] = []
     table: list[list[str]] = []
@@ -875,9 +873,11 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
         ttq_display = _fmt_num(g.bart_ttq, digits=0)
         if g.bart_ttq is not None and g.bart_ttq >= 70:
             ttq_display = f"{ttq_display}*"
+        local_time, _ = _local_time_from_et(g.date, g.time)
+        time_value = local_time or g.time
         table.append(
             [
-                g.time,
+                time_value,
                 g.away_team,
                 g.home_team,
                 ttq_display,
@@ -896,14 +896,31 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
     if not table:
         lines.append("No games matched the filter.")
     else:
-        table_sorted = sorted(table, key=lambda r: time_key(r[0]))
+        def time_sort_key(row: list[str]) -> tuple[int, str]:
+            try:
+                parsed = datetime.strptime(row[0].strip(), "%I:%M %p")
+                return (parsed.hour * 60 + parsed.minute, row[0])
+            except ValueError:
+                return (10**9, row[0])
+
+        table_sorted = sorted(table, key=time_sort_key)
         lines.append("| " + " | ".join(header) + " |")
         lines.append("| " + " | ".join(["---"] * len(header)) + " |")
         for row in table_sorted:
             lines.append("| " + " | ".join(row) + " |")
 
         # Add plain-language bet notes.
-        for row in sorted(filtered_rows, key=lambda r: time_key(r.game.time)):
+        def filtered_sort_key(row: GameComparison) -> tuple[int, str]:
+            local_time, _ = _local_time_from_et(row.game.date, row.game.time)
+            if not local_time:
+                return (10**9, row.game.time)
+            try:
+                parsed = datetime.strptime(local_time.strip(), "%I:%M %p")
+                return (parsed.hour * 60 + parsed.minute, local_time)
+            except ValueError:
+                return (10**9, local_time)
+
+        for row in sorted(filtered_rows, key=filtered_sort_key):
             g = row.game
             spread_diff, total_diff = _diffs_for_game(row)
 
