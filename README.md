@@ -23,6 +23,16 @@ python src/bart_kalshi_agent.py --date 20260108
 
 If you omit `--date`, the script uses whatever date Bart Torvik's schedule page defaults to.
 
+## Time zone
+
+In the raw HTML, Bart's schedule times are in **America/Chicago (Central)** (the site then converts to the viewer's timezone in-browser). This script converts all output times to your local timezone (or your chosen `--tz`).
+
+On Windows, Python may expose the local timezone as a fixed offset (no DST rules), which can lead to an off-by-1-hour display for dates in a different DST period. You can force the output timezone with `--tz`:
+
+```powershell
+python src/bart_kalshi_agent.py --date 20260119 --tz America/Los_Angeles
+```
+
 ## Export to CSV
 
 ```powershell
@@ -36,7 +46,7 @@ By default the script writes `reports/bart_kalshi_<date>_summary.md` containing 
 - TTQ > 50
 - and abs(Bart spread - Kalshi spread) >= 2 OR abs(Bart total - Kalshi total) >= 2
 
-The summary table and picks are ordered by game time, exclude games that have already started, and mark TTQ >= 70 with a star. Times shown in output are converted from Eastern to your local time zone. You can override the path with `--md`.
+The summary table and picks are ordered by game time, exclude games that have already started, and mark TTQ >= 70 with a star. Times shown in output are converted from Bart's schedule timezone (Central) to your local time zone. You can override the path with `--md`.
 
 ## Notes / assumptions
 

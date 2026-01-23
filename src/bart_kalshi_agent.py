@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, tzinfo as TzInfo
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -19,7 +19,43 @@ from bs4 import BeautifulSoup
 
 BART_SCHEDULE_URL = "https://barttorvik.com/schedule.php"
 KALSHI_API_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
-_ET_TZ = ZoneInfo("America/New_York")
+# Bart's schedule page provides times in America/Chicago (Central) in the raw HTML.
+# Their in-browser JS converts from Chicago to the viewer's timezone.
+_BART_TZ = ZoneInfo("America/Chicago")
+
+_WINDOWS_TZ_TO_IANA = {
+    # Common Windows tz display names -> IANA tz database keys (needed for DST-aware conversions).
+    "Pacific Standard Time": "America/Los_Angeles",
+    "Mountain Standard Time": "America/Denver",
+    "Central Standard Time": "America/Chicago",
+    "Eastern Standard Time": "America/New_York",
+    "Alaskan Standard Time": "America/Anchorage",
+    "Hawaiian Standard Time": "Pacific/Honolulu",
+}
+
+
+def _resolve_output_tz(tz_name: Optional[str]) -> TzInfo:
+    """
+    Timezone used for all "local time" display and "already started" filtering.
+
+    On Windows, `datetime.now().astimezone().tzinfo` is often a fixed-offset tzinfo, which
+    can be off by exactly 1 hour when converting dates that fall in a different DST state.
+    """
+    if tz_name:
+        return ZoneInfo(tz_name)
+
+    # Prefer mapping Windows tz names to an IANA key so DST rules apply correctly.
+    try:
+        for name in time.tzname:
+            mapped = _WINDOWS_TZ_TO_IANA.get(name)
+            if mapped:
+                return ZoneInfo(mapped)
+    except Exception:
+        pass
+
+    # Fallback: whatever the OS provides (may be fixed offset).
+    local_tz = datetime.now().astimezone().tzinfo
+    return local_tz or _BART_TZ
 
 
 @dataclass(frozen=True)
@@ -659,15 +695,14 @@ def _fmt_ml(value: Optional[int]) -> str:
     return f"{value:+d}"
 
 
-def _local_time_from_et(game_date: str, game_time: str) -> tuple[Optional[str], Optional[datetime]]:
+def _local_time_from_bart(
+    game_date: str, game_time: str, *, output_tz: TzInfo
+) -> tuple[Optional[str], Optional[datetime]]:
     try:
-        dt_et = datetime.strptime(f"{game_date} {game_time}", "%Y%m%d %I:%M %p").replace(tzinfo=_ET_TZ)
+        dt_bart = datetime.strptime(f"{game_date} {game_time}", "%Y%m%d %I:%M %p").replace(tzinfo=_BART_TZ)
     except ValueError:
         return None, None
-    local_tz = datetime.now().astimezone().tzinfo
-    if local_tz is None:
-        return dt_et.strftime("%I:%M %p"), dt_et
-    dt_local = dt_et.astimezone(local_tz)
+    dt_local = dt_bart.astimezone(output_tz)
     return dt_local.strftime("%I:%M %p"), dt_local
 
 
@@ -689,7 +724,7 @@ def _diffs_for_game(row: GameComparison) -> tuple[Optional[float], Optional[floa
     return spread_diff, total_diff
 
 
-def _print_table(date: str, rows: list[GameComparison]) -> None:
+def _print_table(date: str, rows: list[GameComparison], *, output_tz: TzInfo) -> None:
     header = [
         "Time (Local)",
         "Away",
@@ -710,7 +745,7 @@ def _print_table(date: str, rows: list[GameComparison]) -> None:
     print("\t".join(header))
     for r in rows:
         g = r.game
-        local_time, _ = _local_time_from_et(g.date, g.time)
+        local_time, _ = _local_time_from_bart(g.date, g.time, output_tz=output_tz)
         time_value = local_time or g.time
         bart_score = ""
         if g.bart_predicted_score_away is not None and g.bart_predicted_score_home is not None:
@@ -744,7 +779,7 @@ def _print_table(date: str, rows: list[GameComparison]) -> None:
         )
 
 
-def _write_csv(path: str, date: str, rows: list[GameComparison]) -> None:
+def _write_csv(path: str, date: str, rows: list[GameComparison], *, output_tz: TzInfo) -> None:
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -780,7 +815,7 @@ def _write_csv(path: str, date: str, rows: list[GameComparison]) -> None:
         writer.writeheader()
         for r in rows:
             g = r.game
-            local_time, _ = _local_time_from_et(g.date, g.time)
+            local_time, _ = _local_time_from_bart(g.date, g.time, output_tz=output_tz)
             implied_spread_home = _kalshi_spread_home_value(r.kalshi_line)
             spread_diff, total_diff = _diffs_for_game(r)
             writer.writerow(
@@ -815,7 +850,7 @@ def _write_csv(path: str, date: str, rows: list[GameComparison]) -> None:
             )
 
 
-def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) -> None:
+def _write_markdown_summary(path: str, date: str, rows: list[GameComparison], *, output_tz: TzInfo) -> None:
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
@@ -823,6 +858,7 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
     lines.append("")
     lines.append("Criteria: TTQ > 50 and |spread diff| >= 2 or |total diff| >= 2.")
     lines.append("Notes: games that have already started are excluded; TTQ >= 70 is marked with a star.")
+    lines.append(f"Timezones: schedule base = {_BART_TZ.key}; output = {output_tz}.")
     lines.append("")
 
     header = [
@@ -840,10 +876,13 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
         "Kalshi Implied Score",
     ]
     def is_started(game_date: str, game_time: str) -> bool:
-        _, dt_local = _local_time_from_et(game_date, game_time)
+        _, dt_local = _local_time_from_bart(game_date, game_time, output_tz=output_tz)
         if dt_local is None:
             return False
-        return dt_local <= datetime.now().astimezone()
+        # Treat games as "started" only if they began more than 1 hour ago.
+        # This keeps near-tip / recently-started games in the report.
+        now_local = datetime.now(output_tz)
+        return dt_local <= (now_local - timedelta(hours=1))
 
     filtered_rows: list[GameComparison] = []
     table: list[list[str]] = []
@@ -873,7 +912,7 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
         ttq_display = _fmt_num(g.bart_ttq, digits=0)
         if g.bart_ttq is not None and g.bart_ttq >= 70:
             ttq_display = f"{ttq_display}*"
-        local_time, _ = _local_time_from_et(g.date, g.time)
+        local_time, _ = _local_time_from_bart(g.date, g.time, output_tz=output_tz)
         time_value = local_time or g.time
         table.append(
             [
@@ -911,7 +950,7 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison]) ->
 
         # Add plain-language bet notes.
         def filtered_sort_key(row: GameComparison) -> tuple[int, str]:
-            local_time, _ = _local_time_from_et(row.game.date, row.game.time)
+            local_time, _ = _local_time_from_bart(row.game.date, row.game.time, output_tz=output_tz)
             if not local_time:
                 return (10**9, row.game.time)
             try:
@@ -971,18 +1010,20 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--date", help="YYYYMMDD (defaults to BartTorvik's default schedule date)")
     p.add_argument("--csv", help="Write results to CSV at this path")
     p.add_argument("--md", help="Write summary markdown at this path (defaults to bart_kalshi_<date>_summary.md)")
+    p.add_argument("--tz", help="IANA timezone name for 'local time' output (e.g., America/Los_Angeles)")
     return p.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
+    output_tz = _resolve_output_tz(args.tz)
     date, rows = compare_bart_vs_kalshi(date=args.date)
-    _print_table(date, rows)
+    _print_table(date, rows, output_tz=output_tz)
     if args.csv:
-        _write_csv(args.csv, date, rows)
+        _write_csv(args.csv, date, rows, output_tz=output_tz)
         print(f"Wrote CSV: {args.csv}")
     md_path = args.md or f"reports/bart_kalshi_{date}_summary.md"
-    _write_markdown_summary(md_path, date, rows)
+    _write_markdown_summary(md_path, date, rows, output_tz=output_tz)
     print(f"Wrote summary MD: {md_path}")
     return 0
 

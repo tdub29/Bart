@@ -24,7 +24,7 @@ The summary table and bet notes must:
 
 ## Time handling
 
-- Times on the Bart page are treated as Eastern.
+- In the raw HTML, Bart's schedule times are treated as Central (America/Chicago).
 - All times shown in output (table + summary) must be converted to local time.
 - "Already started" filtering must use the local time.
 
