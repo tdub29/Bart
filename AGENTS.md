@@ -45,6 +45,7 @@ Include a game in the summary when:
 
 - **Hawaii games:** always include (if either team is Hawaii).
 - **Northern Iowa games:** always include (if either team is Northern Iowa).
+- **Tournament games:** always include (if the game's location indicates a tournament, e.g. conference tournament, NCAA, NIT, championship).
 - **All other games:** TTQ > 50, and either |Bart spread - Kalshi spread| >= 2 or |Bart total - Kalshi total| >= 2.
 
 ## Plain-language bet notes
@@ -72,7 +73,7 @@ When the user asks about a specific game that is **not** in the summary report, 
 1. **State** that the game is in the CSV but not in the summary (and briefly why: filter criteria).
 2. **Table** with: Time (local), Bart spread (home), Kalshi spread (home), Bart total, Kalshi total, TTQ, and Bart predicted score.
 3. **Bullets** for spread difference and total difference (with |diff|).
-4. **Explain** why it didn’t make the summary: summary only includes games where TTQ > 50 and either |spread diff| >= 2 or |total diff| >= 2.
+4. **Explain** why it didn’t make the summary: summary only includes games where TTQ > 50 and either |spread diff| >= 2 or |total diff| >= 2 (or the game is Hawaii, Northern Iowa, or a tournament game).
 5. **Conclude** with whether there’s a lean from the comparison or not.
 
 ## CLI usage

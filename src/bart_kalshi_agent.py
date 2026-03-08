@@ -153,14 +153,6 @@ def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def _moneyline_from_prob(prob: float) -> Optional[int]:
-    if prob <= 0.0 or prob >= 1.0:
-        return None
-    if prob >= 0.5:
-        return int(round(-100.0 * prob / (1.0 - prob)))
-    return int(round(100.0 * (1.0 - prob) / prob))
-
-
 def _kalshi_mid_price_cents(market: dict[str, Any]) -> Optional[float]:
     yes_bid = market.get("yes_bid", 0) or 0
     yes_ask = market.get("yes_ask", 0) or 0
@@ -528,37 +520,6 @@ def _find_best_event_ticker(
     return best_ticker
 
 
-def _kalshi_moneyline_for_game(
-    client: KalshiClient, *, event_ticker: str, away_team: str, home_team: str
-) -> KalshiMoneyline:
-    markets = client.list_markets(event_ticker=event_ticker, limit=20)
-    away_can = canonical_team_name(away_team)
-    home_can = canonical_team_name(home_team)
-
-    away_prob: Optional[float] = None
-    home_prob: Optional[float] = None
-
-    for m in markets:
-        team = m.get("yes_sub_title") or ""
-        team_can = canonical_team_name(team)
-        price_cents = _kalshi_mid_price_cents(m)
-        if price_cents is None:
-            continue
-        prob = price_cents / 100.0
-        if team_can == away_can:
-            away_prob = prob
-        elif team_can == home_can:
-            home_prob = prob
-
-    return KalshiMoneyline(
-        away_win_prob=away_prob,
-        home_win_prob=home_prob,
-        away_moneyline=_moneyline_from_prob(away_prob) if away_prob is not None else None,
-        home_moneyline=_moneyline_from_prob(home_prob) if home_prob is not None else None,
-        event_ticker=event_ticker,
-    )
-
-
 _SPREAD_TITLE_RE = re.compile(r"^(?P<team>.+?)\s+wins\s+by\s+over\s+(?P<thresh>\d+(?:\.\d+)?)\s+Points\??$")
 _TOTAL_YES_RE = re.compile(r"^Over\s+(?P<thresh>\d+(?:\.\d+)?)\s+points\s+scored$")
 
@@ -643,7 +604,6 @@ def compare_bart_vs_kalshi(*, date: Optional[str], verbose: bool = False) -> tup
     kalshi = KalshiClient()
 
     series = {
-        "moneyline": "KXNCAAMBGAME",
         "spread": "KXNCAAMBSPREAD",
         "total": "KXNCAAMBTOTAL",
     }
@@ -658,15 +618,12 @@ def compare_bart_vs_kalshi(*, date: Optional[str], verbose: bool = False) -> tup
             tickers = [e.get("event_ticker", "") for e in evs[:5]]
             print(f"[verbose] Kalshi {kind} for {used_date} (token {date_token}): {len(evs)} events, sample: {tickers}", file=sys.stderr)
 
-    ml_index, ml_parsed = _build_kalshi_event_index(events_by_kind["moneyline"])
     sp_index, sp_parsed = _build_kalshi_event_index(events_by_kind["spread"])
     tot_index, tot_parsed = _build_kalshi_event_index(events_by_kind["total"])
 
     out: list[GameComparison] = []
+    dummy_ml = KalshiMoneyline(None, None, None, None, None)
     for g in games:
-        ml_event = _find_best_event_ticker(
-            away_team=g.away_team, home_team=g.home_team, index=ml_index, parsed_events=ml_parsed, min_score=0.78
-        )
         sp_event = _find_best_event_ticker(
             away_team=g.away_team, home_team=g.home_team, index=sp_index, parsed_events=sp_parsed, min_score=0.78
         )
@@ -674,11 +631,10 @@ def compare_bart_vs_kalshi(*, date: Optional[str], verbose: bool = False) -> tup
             away_team=g.away_team, home_team=g.home_team, index=tot_index, parsed_events=tot_parsed, min_score=0.78
         )
 
-        kalshi_ml = _kalshi_moneyline_for_game(kalshi, event_ticker=ml_event, away_team=g.away_team, home_team=g.home_team) if ml_event else KalshiMoneyline(None, None, None, None, None)
         kalshi_line = _kalshi_derived_line_for_game(
             kalshi, spread_event_ticker=sp_event, total_event_ticker=tot_event, away_team=g.away_team, home_team=g.home_team
         )
-        out.append(GameComparison(game=g, kalshi_moneyline=kalshi_ml, kalshi_line=kalshi_line))
+        out.append(GameComparison(game=g, kalshi_moneyline=dummy_ml, kalshi_line=kalshi_line))
     return used_date, out
 
 
@@ -690,12 +646,6 @@ def _fmt_num(value: Optional[float], *, digits: int = 1) -> str:
     if value is None:
         return ""
     return f"{value:.{digits}f}"
-
-
-def _fmt_ml(value: Optional[int]) -> str:
-    if value is None:
-        return ""
-    return f"{value:+d}"
 
 
 def _local_time_from_bart(
@@ -726,6 +676,24 @@ def _is_always_include_game(row: GameComparison) -> bool:
     return False
 
 
+def _is_tournament_game(row: GameComparison) -> bool:
+    """True if the game is part of a tournament (location indicates tournament/championship)."""
+    loc = row.game.location
+    if not loc:
+        return False
+    loc_lower = loc.lower()
+    return (
+        "tournament" in loc_lower
+        or "championship" in loc_lower
+        or "ncaa" in loc_lower
+        or "nit " in loc_lower
+        or " nit" in loc_lower
+        or "cbi" in loc_lower
+        or "cit" in loc_lower
+        or "march madness" in loc_lower
+    )
+
+
 def _diffs_for_game(row: GameComparison) -> tuple[Optional[float], Optional[float]]:
     kalshi_spread_home = _kalshi_spread_home_value(row.kalshi_line)
     spread_diff = None
@@ -738,19 +706,65 @@ def _diffs_for_game(row: GameComparison) -> tuple[Optional[float], Optional[floa
     return spread_diff, total_diff
 
 
+# Typical CBB std dev for margin and total (used to convert point estimates to cover/over prob).
+_SIGMA_SPREAD = 10.5
+_SIGMA_TOTAL = 10.5
+
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF via error function."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _ev_spread(row: GameComparison) -> tuple[Optional[float], Optional[float]]:
+    """
+    EV% for spread (home cover / away cover) at the Kalshi line.
+    Implied prob at the line = 0.5 (median). Bart P(cover) from normal: margin ~ N(bart_spread, sigma).
+    EV% = (True Prob / 0.5) - 1 = 2*True Prob - 1.
+    Returns (ev_pct_home_cover, ev_pct_away_cover).
+    """
+    g = row.game
+    kalshi_spread_home = _kalshi_spread_home_value(row.kalshi_line)
+    if g.bart_spread_home is None or kalshi_spread_home is None:
+        return None, None
+    # P(home margin > kalshi_spread_home) = P(margin - bart > kalshi - bart) = 1 - Phi((kalshi - bart)/sigma)
+    z = (kalshi_spread_home - g.bart_spread_home) / _SIGMA_SPREAD
+    p_home_cover = 1.0 - _norm_cdf(z)
+    p_away_cover = 1.0 - p_home_cover
+    implied = 0.5
+    ev_home = (p_home_cover / implied) - 1.0 if implied > 0 else None
+    ev_away = (p_away_cover / implied) - 1.0 if implied > 0 else None
+    return ev_home, ev_away
+
+
+def _ev_total(row: GameComparison) -> tuple[Optional[float], Optional[float]]:
+    """
+    EV% for total (over / under) at the Kalshi line.
+    Implied prob at the line = 0.5. Bart P(over) from normal: total ~ N(bart_total, sigma).
+    EV% = (True Prob / 0.5) - 1 = 2*True Prob - 1.
+    Returns (ev_pct_over, ev_pct_under).
+    """
+    g = row.game
+    kalshi_total = row.kalshi_line.median_total
+    if g.bart_total is None or kalshi_total is None:
+        return None, None
+    z = (kalshi_total - g.bart_total) / _SIGMA_TOTAL
+    p_over = 1.0 - _norm_cdf(z)
+    p_under = 1.0 - p_over
+    implied = 0.5
+    ev_over = (p_over / implied) - 1.0 if implied > 0 else None
+    ev_under = (p_under / implied) - 1.0 if implied > 0 else None
+    return ev_over, ev_under
+
+
 def _print_table(date: str, rows: list[GameComparison], *, output_tz: TzInfo) -> None:
     header = [
         "Time (Local)",
         "Away",
         "Home",
-        "Bart P(Home)",
         "Bart Line(H)",
         "Bart Score",
         "TTQ",
-        "Kalshi P(Away)",
-        "Kalshi ML(A)",
-        "Kalshi P(Home)",
-        "Kalshi ML(H)",
         "Kalshi Line(H)",
         "Kalshi Total",
         "Kalshi Implied Score",
@@ -777,14 +791,9 @@ def _print_table(date: str, rows: list[GameComparison], *, output_tz: TzInfo) ->
                     time_value,
                     g.away_team,
                     g.home_team,
-                    _fmt_pct(g.bart_win_prob_home),
                     _fmt_num(g.bart_spread_home),
                     bart_score,
                     _fmt_num(g.bart_ttq, digits=0),
-                    _fmt_pct(r.kalshi_moneyline.away_win_prob),
-                    _fmt_ml(r.kalshi_moneyline.away_moneyline),
-                    _fmt_pct(r.kalshi_moneyline.home_win_prob),
-                    _fmt_ml(r.kalshi_moneyline.home_moneyline),
                     _fmt_num(kalshi_spread_home),
                     _fmt_num(r.kalshi_line.median_total),
                     kalshi_implied,
@@ -803,26 +812,25 @@ def _write_csv(path: str, date: str, rows: list[GameComparison], *, output_tz: T
         "home_team",
         "bart_predicted_winner",
         "bart_ttq",
-        "bart_win_prob_home",
-        "bart_win_prob_away",
         "bart_spread_home",
         "bart_total",
         "bart_predicted_score_away",
         "bart_predicted_score_home",
-        "kalshi_event_ticker_moneyline",
-        "kalshi_win_prob_away",
-        "kalshi_win_prob_home",
-        "kalshi_moneyline_away",
-        "kalshi_moneyline_home",
         "kalshi_event_ticker_spread",
         "kalshi_median_home_margin",
         "kalshi_implied_spread_home",
         "diff_spread_bart_minus_kalshi",
+        "pct_spread",
         "kalshi_event_ticker_total",
         "kalshi_median_total",
         "diff_total_bart_minus_kalshi",
+        "pct_total",
         "kalshi_implied_score_away",
         "kalshi_implied_score_home",
+        "ev_pct_spread_home",
+        "ev_pct_spread_away",
+        "ev_pct_over",
+        "ev_pct_under",
     ]
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -832,6 +840,16 @@ def _write_csv(path: str, date: str, rows: list[GameComparison], *, output_tz: T
             local_time, _ = _local_time_from_bart(g.date, g.time, output_tz=output_tz)
             implied_spread_home = _kalshi_spread_home_value(r.kalshi_line)
             spread_diff, total_diff = _diffs_for_game(r)
+            kalshi_total = r.kalshi_line.median_total
+            pct_spread = ""
+            if spread_diff is not None and implied_spread_home is not None:
+                denom = max(abs(implied_spread_home), 1.0)
+                pct_spread = round(100.0 * abs(spread_diff) / denom, 2)
+            pct_total = ""
+            if total_diff is not None and kalshi_total is not None and kalshi_total > 0:
+                pct_total = round(100.0 * abs(total_diff) / kalshi_total, 2)
+            ev_sh, ev_sa = _ev_spread(r)
+            ev_to, ev_tu = _ev_total(r)
             writer.writerow(
                 {
                     "date": date,
@@ -840,26 +858,25 @@ def _write_csv(path: str, date: str, rows: list[GameComparison], *, output_tz: T
                     "home_team": g.home_team,
                     "bart_predicted_winner": g.bart_predicted_winner,
                     "bart_ttq": g.bart_ttq,
-                    "bart_win_prob_home": g.bart_win_prob_home,
-                    "bart_win_prob_away": g.bart_win_prob_away,
                     "bart_spread_home": g.bart_spread_home,
                     "bart_total": g.bart_total,
                     "bart_predicted_score_away": g.bart_predicted_score_away,
                     "bart_predicted_score_home": g.bart_predicted_score_home,
-                    "kalshi_event_ticker_moneyline": r.kalshi_moneyline.event_ticker,
-                    "kalshi_win_prob_away": r.kalshi_moneyline.away_win_prob,
-                    "kalshi_win_prob_home": r.kalshi_moneyline.home_win_prob,
-                    "kalshi_moneyline_away": r.kalshi_moneyline.away_moneyline,
-                    "kalshi_moneyline_home": r.kalshi_moneyline.home_moneyline,
                     "kalshi_event_ticker_spread": r.kalshi_line.spread_event_ticker,
                     "kalshi_median_home_margin": r.kalshi_line.median_home_margin,
                     "kalshi_implied_spread_home": implied_spread_home,
                     "diff_spread_bart_minus_kalshi": spread_diff,
+                    "pct_spread": pct_spread if pct_spread != "" else None,
                     "kalshi_event_ticker_total": r.kalshi_line.total_event_ticker,
                     "kalshi_median_total": r.kalshi_line.median_total,
                     "diff_total_bart_minus_kalshi": total_diff,
+                    "pct_total": pct_total if pct_total != "" else None,
                     "kalshi_implied_score_away": r.kalshi_line.implied_score_away,
                     "kalshi_implied_score_home": r.kalshi_line.implied_score_home,
+                    "ev_pct_spread_home": round(ev_sh * 100, 2) if ev_sh is not None else None,
+                    "ev_pct_spread_away": round(ev_sa * 100, 2) if ev_sa is not None else None,
+                    "ev_pct_over": round(ev_to * 100, 2) if ev_to is not None else None,
+                    "ev_pct_under": round(ev_tu * 100, 2) if ev_tu is not None else None,
                 }
             )
 
@@ -871,10 +888,11 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison], *,
     lines.append(f"# Bart vs Kalshi discrepancies ({date})")
     lines.append("")
     if no_ttq_filter:
-        lines.append("Criteria: |spread diff| >= 2 or |total diff| >= 2 (no TTQ filter); Hawaii and Northern Iowa games are always included.")
+        lines.append("Criteria: |spread diff| >= 2 or |total diff| >= 2 (no TTQ filter); Hawaii, Northern Iowa, and tournament games are always included. Conf tournament games highlighted.")
     else:
-        lines.append("Criteria: TTQ > 50 and |spread diff| >= 2 or |total diff| >= 2; Hawaii and Northern Iowa games are always included.")
+        lines.append("Criteria: TTQ > 50 and |spread diff| >= 2 or |total diff| >= 2; Hawaii, Northern Iowa, and tournament games are always included.")
     lines.append("Notes: games that have already started are excluded; TTQ >= 70 is marked with a star.")
+    lines.append("EV: spread and O/U at Kalshi line (implied 50¢). EV% = (True Prob / 0.5) − 1. True prob from Bart point spread/total + normal (σ=10.5). Spread/Total % = |line diff|/line.")
     lines.append(f"Timezones: schedule base = {_BART_TZ.key}; output = {output_tz}.")
     lines.append("")
 
@@ -882,13 +900,20 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison], *,
         "Time (Local)",
         "Away",
         "Home",
+        "Conf Tourn",
         "TTQ",
         "Bart Line(H)",
         "Kalshi Line(H)",
         "Spread Diff",
+        "Spread %",
         "Bart Total",
         "Kalshi Total",
         "Total Diff",
+        "Total %",
+        "Spread EV% (H)",
+        "Spread EV% (A)",
+        "Over EV%",
+        "Under EV%",
         "Bart Score",
         "Kalshi Implied Score",
     ]
@@ -907,7 +932,7 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison], *,
         g = row.game
         if is_started(g.date, g.time):
             continue
-        include_always = _is_always_include_game(row)
+        include_always = _is_always_include_game(row) or _is_tournament_game(row)
         if not include_always:
             if not no_ttq_filter and (g.bart_ttq is None or g.bart_ttq <= 50):
                 continue
@@ -928,24 +953,56 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison], *,
 
         kalshi_spread_home = _kalshi_spread_home_value(row.kalshi_line)
 
+        # Spread %: 100 * |spread_diff| / max(|Kalshi spread|, 1) so small spreads don't blow up
+        if spread_diff is not None and kalshi_spread_home is not None:
+            denom = max(abs(kalshi_spread_home), 1.0)
+            spread_pct = 100.0 * abs(spread_diff) / denom
+            spread_pct_str = f"{spread_pct:.1f}%"
+        else:
+            spread_pct_str = "—"
+
+        # Total %: 100 * |total_diff| / Kalshi total
+        kalshi_total = row.kalshi_line.median_total
+        if total_diff is not None and kalshi_total is not None and kalshi_total > 0:
+            total_pct = 100.0 * abs(total_diff) / kalshi_total
+            total_pct_str = f"{total_pct:.1f}%"
+        else:
+            total_pct_str = "—"
+
+        # Spread and O/U EV% at Kalshi line (implied 50¢)
+        ev_sh, ev_sa = _ev_spread(row)
+        ev_to, ev_tu = _ev_total(row)
+        spread_ev_h_str = f"{ev_sh * 100:+.1f}%" if ev_sh is not None else "—"
+        spread_ev_a_str = f"{ev_sa * 100:+.1f}%" if ev_sa is not None else "—"
+        over_ev_str = f"{ev_to * 100:+.1f}%" if ev_to is not None else "—"
+        under_ev_str = f"{ev_tu * 100:+.1f}%" if ev_tu is not None else "—"
+
         filtered_rows.append(row)
         ttq_display = _fmt_num(g.bart_ttq, digits=0)
         if g.bart_ttq is not None and g.bart_ttq >= 70:
             ttq_display = f"{ttq_display}*"
         local_time, _ = _local_time_from_bart(g.date, g.time, output_tz=output_tz)
         time_value = local_time or g.time
+        conf_tourn = "✓" if _is_tournament_game(row) else "—"
         table.append(
             [
                 time_value,
                 g.away_team,
                 g.home_team,
+                conf_tourn,
                 ttq_display,
                 _fmt_num(g.bart_spread_home),
                 _fmt_num(kalshi_spread_home),
                 _fmt_num(spread_diff),
+                spread_pct_str,
                 _fmt_num(g.bart_total),
                 _fmt_num(row.kalshi_line.median_total),
                 _fmt_num(total_diff),
+                total_pct_str,
+                spread_ev_h_str,
+                spread_ev_a_str,
+                over_ev_str,
+                under_ev_str,
                 bart_score,
                 kalshi_implied,
             ]
@@ -985,6 +1042,8 @@ def _write_markdown_summary(path: str, date: str, rows: list[GameComparison], *,
 
             kalshi_spread_home = _kalshi_spread_home_value(row.kalshi_line)
             matchup = f"{g.away_team} at {g.home_team}"
+            if _is_tournament_game(row):
+                matchup = f"**{matchup}** (Conf tournament)"
             bart_score_note = ""
             if g.bart_predicted_score_away is not None and g.bart_predicted_score_home is not None:
                 bart_score_note = f" Bart predicted score: {g.bart_predicted_score_away}-{g.bart_predicted_score_home}."
