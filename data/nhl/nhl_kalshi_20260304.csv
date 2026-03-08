@@ -1,0 +1,6 @@
+date,event_ticker,away_team,home_team,away_win_prob,home_win_prob,favorite,favorite_win_prob,underdog_win_prob,expected_expiration_utc
+20260304,KXNHLGAME-26MAR04STLSEA,St. Louis,Seattle,0.435,0.575,Seattle,0.575,0.435,2026-03-05T06:00:00Z
+20260304,KXNHLGAME-26MAR04NYIANA,NY Islanders,Anaheim,0.515,0.485,NY Islanders,0.515,0.485,2026-03-05T06:00:00Z
+20260304,KXNHLGAME-26MAR04CARVAN,Carolina,Vancouver,0.705,0.295,Carolina,0.705,0.295,2026-03-05T06:00:00Z
+20260304,KXNHLGAME-26MAR04VGKDET,Vegas,Detroit,0.435,0.565,Detroit,0.565,0.435,2026-03-05T03:00:00Z
+20260304,KXNHLGAME-26MAR04TORNJ,Toronto,New Jersey,0.485,0.52,New Jersey,0.52,0.485,2026-03-05T03:00:00Z
