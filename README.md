@@ -1,6 +1,6 @@
-# Bart Torvik & NHL vs Kalshi Comparators
+# Bart Torvik and NHL vs Kalshi
 
-This repo contains Python agents that compare predictions to Kalshi markets and output CSV + Markdown summaries.
+Pulls model predictions and Kalshi market prices for the same games, then flags the games where the model and the market disagree by 2 or more points on spread or total. College basketball uses Bart Torvik's T-Rank; the NHL side uses the game lines from Jersey Mike's daily picks. Each run writes a CSV plus a Markdown pick sheet.
 
 ## Two workflows
 
@@ -11,7 +11,7 @@ This repo contains Python agents that compare predictions to Kalshi markets and 
 
 ---
 
-## Bart (CBB) — Bart Torvik vs Kalshi
+## Bart (CBB): Bart Torvik vs Kalshi
 
 1. Pulls the men's CBB schedule + T-Rank predictions from `https://barttorvik.com/schedule.php`
 2. Pulls Kalshi markets (winner / spread / total) for those games
@@ -50,7 +50,7 @@ python src/bart_kalshi_agent.py --date 20260213 --tz America/Los_Angeles
 
 ---
 
-## NHL — Jersey Mike's daily picks vs Kalshi
+## NHL: Jersey Mike's daily picks vs Kalshi
 
 **Note:** Do not run the NHL agent before 2/25 (Kalshi markets are not available until then). Use **2026** for the year in dates.
 
@@ -76,4 +76,4 @@ The summary table and picks are ordered by game time, exclude games that have al
 - Console output is tab-separated so you can copy/paste into Excel/Sheets easily.
 - Bart Torvik blocks non-JS browsers on the first request; the Bart script mimics the required `js_test_submitted=1` POST to get the real schedule HTML.
 - Kalshi data is pulled from their public `trade-api/v2` endpoints and is rate-limited; the scripts use a small delay + retry/backoff for HTTP 429 responses.
-- Matching is done primarily by team names (with aliases + fuzzy matching fallback). If you see missing/incorrect joins, tell me which matchups and I'll tune the normalizer.
+- Matching is done primarily by team names (with aliases + fuzzy matching fallback). A missing or wrong join usually means a team name needs another alias.
