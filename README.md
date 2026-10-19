@@ -2,6 +2,17 @@
 
 Pulls model predictions and Kalshi market prices for the same games, then flags the games where the model and the market disagree by 2 or more points on spread or total. College basketball uses Bart Torvik's T-Rank; the NHL side uses the game lines from Jersey Mike's daily picks. Each run writes a CSV plus a Markdown pick sheet.
 
+## From source lines to comparison report
+
+```mermaid
+flowchart LR
+    A["Bart Torvik / Jersey Mike NHL lines"] --> C["Match games by team names"]
+    B["Kalshi market prices"] --> C
+    C --> D["Compare spreads and totals"]
+    D --> E["Flag qualifying discrepancies"]
+    E --> F["CSV and Markdown pick sheet"]
+```
+
 ## Two workflows
 
 | Workflow | Purpose | Script | Data | Reports |
