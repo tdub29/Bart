@@ -88,3 +88,7 @@ The summary table and picks are ordered by game time, exclude games that have al
 - Bart Torvik blocks non-JS browsers on the first request; the Bart script mimics the required `js_test_submitted=1` POST to get the real schedule HTML.
 - Kalshi data is pulled from their public `trade-api/v2` endpoints and is rate-limited; the scripts use a small delay + retry/backoff for HTTP 429 responses.
 - Matching is done primarily by team names (with aliases + fuzzy matching fallback). A missing or wrong join usually means a team name needs another alias.
+
+## More projects
+
+More of my work and contact details are at [twhite.dev](https://twhite.dev).
