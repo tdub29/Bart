@@ -2,6 +2,18 @@
 
 Pulls model predictions and Kalshi market prices for the same games, then flags the games where the model and the market disagree by 2 or more points on spread or total. College basketball uses Bart Torvik's T-Rank; the NHL side uses the game lines from Jersey Mike's daily picks. Each run writes a CSV plus a Markdown pick sheet.
 
+## Historical comparison output: January 9, 2026
+
+Three rows from the saved report. Differences are Bart minus Kalshi, in points.
+
+| Matchup | Spread Diff | Total Diff |
+| --- | --- | --- |
+| Akron at Bowling Green | -4.4 | 4.3 |
+| USC at Minnesota | 0.3 | -3.8 |
+| Miami OH at Toledo | 4.4 | -2.5 |
+
+[Full historical report](reports/bart/bart_kalshi_20260109_summary.md), including source lines, totals and predicted scores. This archived output shows the report format and comparisons for that date.
+
 ## From source lines to comparison report
 
 ```mermaid
